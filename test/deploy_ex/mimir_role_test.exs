@@ -165,11 +165,19 @@ defmodule DeployEx.MimirRoleTest do
       refute content =~ "warn: false"
     end
 
-    test "installs unzip before extracting the Alloy .zip release (Ubuntu 24.04 has none by default)" do
-      content = File.read!(@alloy_tasks_path)
+    # opgg's original 16-line fix guarded the unzip install with `when: not
+    # alloy.stat.exists` (skip the apt call on repeat runs once Alloy is already
+    # present). #26 (975c5d3, reconciled alongside opgg's fix here) made `alloy`
+    # itself version-aware — same variable name, now registered from a
+    # version-scoped stat — so the guard composes unchanged: still "skip the
+    # unzip install once this exact version is already installed".
+    test "installs unzip, guarded by opgg's `when: not alloy.stat.exists` (skips redundant apt calls on repeat runs)" do
+      unzip_task = Enum.find(YamlElixir.read_from_file!(@alloy_tasks_path) |> flatten_tasks_for_test(), fn task ->
+        get_in(task, ["apt", "name"]) === "unzip"
+      end)
 
-      assert content =~ ~r/name:\s+Install unzip/
-      assert content =~ "name: unzip"
+      refute is_nil(unzip_task), "expected a task installing the unzip apt package"
+      assert unzip_task["when"] === "not alloy.stat.exists"
     end
 
     test "notifies the restart alloy handler when config or unit changes" do
@@ -275,6 +283,7 @@ defmodule DeployEx.MimirRoleTest do
 
       assert rendered =~ "\"__address__\" = \"localhost:9100\","
       assert rendered =~ "\"__address__\" = \"localhost:4050\","
+      assert_alloy_valid!(rendered)
     end
 
     test "overriding alloy_app_metrics_port changes the app scrape target and purges the literal 4050, while node_exporter's 9100 stays untouched" do
@@ -283,6 +292,7 @@ defmodule DeployEx.MimirRoleTest do
       assert rendered =~ "\"__address__\" = \"localhost:9999\","
       assert rendered =~ "\"__address__\" = \"localhost:9100\","
       refute rendered =~ "4050"
+      assert_alloy_valid!(rendered)
     end
 
     test "control: the render instrument itself can fail (proves the assertions above are not vacuous)" do
@@ -299,6 +309,23 @@ defmodule DeployEx.MimirRoleTest do
       refute rendered =~ "prometheus.scrape"
       refute rendered =~ "prometheus.remote_write"
       assert rendered =~ "loki.write \"default\""
+      assert_alloy_valid!(rendered)
+    end
+
+    # opgg's own review (PR #120) found that a substring assertion CANNOT catch this
+    # class of defect: a reviewer commented a prometheus.scrape block out with `#`,
+    # which is not a comment character in Alloy's River config language (`//` is).
+    # Every substring assertion still passed because the literal text was still
+    # present *inside* the "comment" — the file was no longer valid Alloy and nothing
+    # noticed. `alloy validate` is the arm that discriminates; this test proves it by
+    # reproducing the exact defect and showing both halves of the claim in one place:
+    # the substring check stays green, and validate does not.
+    test "alloy validate catches a `#`-commented block that a substring assertion cannot (opgg PR #120 defect class)" do
+      rendered = render_jinja!(@alloy_path, Map.put(@base_context, "alloy_app_metrics_port", 4050))
+      mutated = String.replace(rendered, ~s(prometheus.scrape "app" {), ~s(# prometheus.scrape "app" {))
+
+      assert mutated =~ "prometheus.scrape \"app\""
+      refute alloy_validate_exit_status(mutated) === 0
     end
   end
 
@@ -369,6 +396,13 @@ defmodule DeployEx.MimirRoleTest do
     end
   end
 
+  defp flatten_tasks_for_test(entries) do
+    Enum.flat_map(entries, fn
+      %{"block" => block} -> flatten_tasks_for_test(block)
+      task -> [task]
+    end)
+  end
+
   # SECTION: real-render helper — shells out to ansible-core's own bundled Jinja2, the
   # exact engine that will render this template in production. Raises loudly (never
   # skips) when no Jinja2-capable python is found — a missing interpreter is a test
@@ -427,5 +461,35 @@ defmodule DeployEx.MimirRoleTest do
       template = jinja2.Template(source_file.read())
     sys.stdout.write(template.render(**context))
     """
+  end
+
+  # SECTION: alloy validate — the arm that discriminates a syntactically-invalid
+  # River config from a substring match that only looked for the right text. Raises
+  # loudly (never skips) when the `alloy` binary is absent — reporting a silent
+  # substring-only fallback as "verified" is exactly what this exists to prevent.
+
+  defp assert_alloy_valid!(rendered_config) do
+    exit_status = alloy_validate_exit_status(rendered_config)
+
+    if exit_status !== 0 do
+      raise "alloy validate rejected a render expected to be valid (exit #{exit_status}): #{rendered_config}"
+    end
+
+    :ok
+  end
+
+  defp alloy_validate_exit_status(rendered_config) do
+    tmp_path = Path.join(System.tmp_dir!(), "mimir_role_test_alloy_#{System.unique_integer([:positive])}.alloy")
+    File.write!(tmp_path, rendered_config)
+
+    {_output, exit_status} = System.cmd(alloy_binary!(), ["validate", tmp_path], stderr_to_stdout: true)
+    File.rm!(tmp_path)
+
+    exit_status
+  end
+
+  defp alloy_binary! do
+    System.find_executable("alloy") ||
+      raise "the alloy CLI was not found on PATH — install it (https://github.com/grafana/alloy, opgg tested v1.19.0) to validate rendered configs for real; a substring-only fallback would not have caught the opgg PR #120 `#`-comment defect class"
   end
 end
