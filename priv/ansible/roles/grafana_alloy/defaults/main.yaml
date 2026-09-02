@@ -1,3 +1,5 @@
 alloy_version: v1.9.0
 alloy_architecture: linux-amd64
+alloy_app_metrics_port: 4050
+alloy_app_metrics_scrape_app_names: []
 extra_alloy_env: []
