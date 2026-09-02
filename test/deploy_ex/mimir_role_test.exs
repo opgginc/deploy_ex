@@ -230,6 +230,29 @@ defmodule DeployEx.MimirRoleTest do
       assert content =~ "alloy_app_metrics_port: 4050"
     end
 
+    # F59: deploy_ex is a general tool and must not learn one consumer's release
+    # topology. opgg's incident fix (O8, 2026-08-31) hardcodes
+    # `app_name in ['pipeline', 'polling']` in their own hand-edited, generated
+    # tree — deploy_ex ships the SCOPE as a role default instead, empty by default
+    # (unrestricted, preserving every existing consumer's current behavior), so a
+    # consumer expresses their topology in configuration that survives
+    # `mix ansible.build` rather than in a hand-edit that gets clobbered by it.
+    test "defaults/main.yaml declares alloy_app_metrics_scrape_app_names: [] (unrestricted by default, no consumer release names hardcoded)" do
+      content = File.read!(@alloy_defaults_path)
+
+      assert content =~ "alloy_app_metrics_scrape_app_names: []"
+    end
+
+    test "the template reads the scope bare, with no default() filter (deploy_ex names no consumer release class)" do
+      content = File.read!(@alloy_path)
+
+      assert content =~ "alloy_app_metrics_scrape_app_names"
+      refute content =~ "alloy_app_metrics_scrape_app_names | default"
+      refute content =~ "alloy_app_metrics_scrape_app_names|default"
+      refute content =~ ~s(['pipeline')
+      refute content =~ ~s(["pipeline")
+    end
+
     test "the loki pipeline is untouched apart from the app_name default('') guard (see next test)" do
       baseline = File.read!(Path.join(@fixtures_dir, "baseline_alloy_config.alloy.j2"))
       expected_loki_pipeline = String.replace(baseline, @app_name_pre_fix, @app_name_post_fix)
@@ -326,6 +349,94 @@ defmodule DeployEx.MimirRoleTest do
 
       assert mutated =~ "prometheus.scrape \"app\""
       refute alloy_validate_exit_status(mutated) === 0
+    end
+  end
+
+  # SECTION: alloy_config.alloy.j2 — app-metrics scrape scoping (F59, real render)
+  #
+  # Newly approved onto this port after opgg's O8 production OOM (2026-08-31):
+  # PrometheusTelemetry's _dist ETS tables only drain when something GETs
+  # /metrics. Release classes with no HTTP endpoint of their own (opgg's
+  # "pipeline"/"polling") never get scraped by anything else, so those tables grow
+  # unbounded — Alloy's app scrape is what drains them. Release classes that DO run
+  # their own bearer-gated listener on a different port ("server"/"service", per
+  # opgg's own comment) must NOT gain a second, unauthenticated scrape target.
+  #
+  # deploy_ex must not learn opgg's release names — alloy_app_metrics_scrape_app_names
+  # is a role default (empty list = unrestricted, matching every existing consumer's
+  # current behavior unchanged) that a consumer sets to their own list. Same pattern
+  # as alloy_app_metrics_port: role default, read bare, no `| default(...)` filter.
+
+  describe "alloy_config.alloy.j2 — app-metrics scrape scoping (F59)" do
+    @alloy_path Path.join(@priv_roles_dir, "grafana_alloy/templates/alloy_config.alloy.j2")
+
+    @base_context %{
+      "grafana_loki_url" => "http://loki.internal:3100",
+      "grafana_mimir_url" => "http://mimir.internal:8080",
+      "inventory_hostname" => "app-001",
+      "instance_id" => "i-0abc123",
+      "alloy_app_metrics_port" => 4050
+    }
+
+    test "empty scrape_app_names (the default) still scrapes any app_name — existing consumers see no behaviour change" do
+      rendered =
+        render_jinja!(@alloy_path, Map.merge(@base_context, %{"app_name" => "server", "alloy_app_metrics_scrape_app_names" => []}))
+
+      assert rendered =~ "prometheus.scrape \"app\""
+      assert_alloy_valid!(rendered)
+    end
+
+    test "a non-empty scrape_app_names list scopes OUT an app_name not on it" do
+      rendered =
+        render_jinja!(
+          @alloy_path,
+          Map.merge(@base_context, %{
+            "app_name" => "server",
+            "alloy_app_metrics_scrape_app_names" => ["pipeline", "polling"]
+          })
+        )
+
+      refute rendered =~ "prometheus.scrape \"app\""
+      assert_alloy_valid!(rendered)
+    end
+
+    test "a non-empty scrape_app_names list scopes IN an app_name that is on it" do
+      rendered =
+        render_jinja!(
+          @alloy_path,
+          Map.merge(@base_context, %{
+            "app_name" => "pipeline",
+            "alloy_app_metrics_scrape_app_names" => ["pipeline", "polling"]
+          })
+        )
+
+      assert rendered =~ "prometheus.scrape \"app\""
+      assert rendered =~ "\"__address__\" = \"localhost:4050\","
+      assert_alloy_valid!(rendered)
+    end
+
+    test "node_exporter's :9100 scrape is present and unaffected whether the app is scoped in or out" do
+      scoped_out =
+        render_jinja!(
+          @alloy_path,
+          Map.merge(@base_context, %{"app_name" => "server", "alloy_app_metrics_scrape_app_names" => ["pipeline"]})
+        )
+
+      scoped_in =
+        render_jinja!(
+          @alloy_path,
+          Map.merge(@base_context, %{"app_name" => "pipeline", "alloy_app_metrics_scrape_app_names" => ["pipeline"]})
+        )
+
+      assert scoped_out =~ "\"__address__\" = \"localhost:9100\","
+      assert scoped_in =~ "\"__address__\" = \"localhost:9100\","
+    end
+
+    test "omitting the variable entirely (no role default injected) still renders the app scrape — undefined behaves as unrestricted" do
+      rendered = render_jinja!(@alloy_path, Map.put(@base_context, "app_name", "server"))
+
+      assert rendered =~ "prometheus.scrape \"app\""
+      assert_alloy_valid!(rendered)
     end
   end
 

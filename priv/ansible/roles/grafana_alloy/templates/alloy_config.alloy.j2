@@ -63,6 +63,7 @@ prometheus.scrape "node_exporter" {
   forward_to = [prometheus.remote_write.mimir.receiver]
 }
 {% if app_name is defined %}
+{% if not alloy_app_metrics_scrape_app_names or app_name in alloy_app_metrics_scrape_app_names %}
 
 prometheus.scrape "app" {
   job_name = "apps"
@@ -73,6 +74,7 @@ prometheus.scrape "app" {
   }]
   forward_to = [prometheus.remote_write.mimir.receiver]
 }
+{% endif %}
 {% endif %}
 
 prometheus.remote_write "mimir" {
