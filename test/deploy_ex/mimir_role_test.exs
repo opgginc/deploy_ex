@@ -206,7 +206,7 @@ defmodule DeployEx.MimirRoleTest do
     test "scrapes node_exporter and app metrics locally, remote_writes to Mimir, no ec2_sd" do
       content = File.read!(@alloy_path)
 
-      assert content =~ "{% if grafana_mimir_url is defined %}"
+      assert content =~ "{% if grafana_mimir_url_configured %}"
       assert content =~ "localhost:9100"
       assert content =~ "{% if app_name is defined %}"
       assert content =~ "localhost:{{ alloy_app_metrics_port }}"
@@ -296,6 +296,7 @@ defmodule DeployEx.MimirRoleTest do
     @base_context %{
       "grafana_loki_url" => "http://loki.internal:3100",
       "grafana_mimir_url" => "http://mimir.internal:8080",
+      "grafana_mimir_url_configured" => true,
       "app_name" => "my_app",
       "inventory_hostname" => "app-001",
       "instance_id" => "i-0abc123"
@@ -373,6 +374,7 @@ defmodule DeployEx.MimirRoleTest do
     @base_context %{
       "grafana_loki_url" => "http://loki.internal:3100",
       "grafana_mimir_url" => "http://mimir.internal:8080",
+      "grafana_mimir_url_configured" => true,
       "inventory_hostname" => "app-001",
       "instance_id" => "i-0abc123",
       "alloy_app_metrics_port" => 4050
@@ -445,10 +447,10 @@ defmodule DeployEx.MimirRoleTest do
   describe "grafana-datasources.yaml.j2 — Mimir datasource" do
     @datasource_path Path.join(@priv_roles_dir, "grafana_ui/templates/grafana-datasources.yaml.j2")
 
-    test "adds a Mimir prometheus-type datasource under the grafana_mimir_url conditional" do
+    test "adds a Mimir prometheus-type datasource under the grafana_mimir_url_configured conditional" do
       content = File.read!(@datasource_path)
 
-      assert content =~ "{% if grafana_mimir_url is defined %}"
+      assert content =~ "{% if grafana_mimir_url_configured %}"
       assert content =~ "name: Mimir Metrics"
       assert content =~ "type: prometheus"
       assert content =~ "url: {{ grafana_mimir_url }}/prometheus"
@@ -477,7 +479,7 @@ defmodule DeployEx.MimirRoleTest do
       assert content =~ "name: Prometheus Metrics"
 
       prometheus_if = :binary.match(content, "{% if grafana_prometheus_url is defined %}") |> elem(0)
-      mimir_if = :binary.match(content, "{% if grafana_mimir_url is defined %}") |> elem(0)
+      mimir_if = :binary.match(content, "{% if grafana_mimir_url_configured %}") |> elem(0)
       endif_positions = for [{pos, _}] <- Regex.scan(~r/\{% endif %\}/, content, return: :index), do: pos
 
       prometheus_endif = Enum.find(endif_positions, &(&1 > prometheus_if))
