@@ -51,7 +51,12 @@ loki.write "default" {
     url = "{{ grafana_loki_url }}/loki/api/v1/push"
   }
 }
-{% if grafana_mimir_url is defined %}
+// Gated on grafana_mimir_url_configured, supplied by deploy_ex's own
+// group_vars/all.yaml.eex. Undefined here means this consumer has not
+// enabled Mimir -- not that the block is dead. Deleting it is silently
+// restored by the next `mix ansible.build` regeneration; disable Mimir in
+// group_vars instead.
+{% if grafana_mimir_url_configured %}
 
 prometheus.scrape "node_exporter" {
   job_name = "nodes"
@@ -63,16 +68,18 @@ prometheus.scrape "node_exporter" {
   forward_to = [prometheus.remote_write.mimir.receiver]
 }
 {% if app_name is defined %}
+{% if not alloy_app_metrics_scrape_app_names or app_name in alloy_app_metrics_scrape_app_names %}
 
 prometheus.scrape "app" {
   job_name = "apps"
   targets = [{
-    "__address__" = "localhost:4050",
+    "__address__" = "localhost:{{ alloy_app_metrics_port }}",
     "instance"    = "{{ inventory_hostname }}",
     "instance_id" = "{{ instance_id | default('unknown') }}",
   }]
   forward_to = [prometheus.remote_write.mimir.receiver]
 }
+{% endif %}
 {% endif %}
 
 prometheus.remote_write "mimir" {

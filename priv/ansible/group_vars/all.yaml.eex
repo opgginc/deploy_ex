@@ -38,6 +38,12 @@ system_env:
   - PATH=/root/.asdf/shims:/root/.asdf/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 <%= if @is_mimir_enabled do %>
 
+# True once grafana_mimir_url below has been filled in with a real address.
+# Both the grafana_alloy and grafana_ui roles gate their Mimir wiring on this
+# (not on `grafana_mimir_url is defined`) so the two roles can't disagree
+# about whether Mimir exists.
+grafana_mimir_url_configured: "{{ grafana_mimir_url is defined and 'FILL_IN_AFTER_FIRST_APPLY' not in grafana_mimir_url }}"
+
 # Fill in after the first `mix terraform.apply` — mimir_db's IP is
 # DHCP-assigned, not known at render time. Discover it with:
 #   mix deploy_ex.find_nodes --tag MonitoringKey=mimir_db
